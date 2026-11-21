@@ -37,6 +37,7 @@ from ..youtube_proxy import (
     PartialDownloadUnavailable,
     YouTubeAgeRestrictedError,
     YouTubeGeoRestrictedError,
+    audio_first_enabled,
     proxy_configured,
     public_download_error,
 )
@@ -2067,7 +2068,7 @@ class VideoService:
                 )
                 # Audio first only when a proxy is configured and we do not
                 # already have the full source cached. Uploads never reach here.
-                if proxy_configured(runtime_config) and video_id and not cached_full:
+                if audio_first_enabled(runtime_config) and video_id and not cached_full:
                     def _resolve_analysis():
                         def _download_full():
                             return resolve_full_youtube_download(

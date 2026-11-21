@@ -77,6 +77,9 @@ class Config:
         self.youtube_download_max_bytes = self._get_int_env("YOUTUBE_DOWNLOAD_MAX_BYTES", 2_000_000_000)
         self.youtube_section_padding_seconds = self._get_float_env("YOUTUBE_SECTION_PADDING_SECONDS", 10.0)
         self.youtube_max_height = self._get_int_env("YOUTUBE_MAX_HEIGHT", 1080)
+        # Hook-only mode: analyse audio first, then download only the selected
+        # sections, over a direct connection when no proxy is configured.
+        self.youtube_hook_only = self._get_bool_env("YOUTUBE_HOOK_ONLY", False)
         self.youtube_source_cache = self._get_bool_env("YOUTUBE_SOURCE_CACHE", True)
         self.youtube_source_cache_ttl_seconds = self._get_int_env(
             "YOUTUBE_SOURCE_CACHE_TTL_SECONDS", 604800

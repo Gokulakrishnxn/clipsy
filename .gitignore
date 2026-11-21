@@ -25,3 +25,6 @@ docs/youtube-provider-registry*.json
 
 # Local agent checkouts
 .claude/worktrees/
+
+# Local media, caches and renders (TEMP_DIR when self-hosting without Docker)
+backend/uploads/

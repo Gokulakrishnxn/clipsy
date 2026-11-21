@@ -9,6 +9,7 @@ import assemblyai as aai
 from ..config import get_config
 import httpx
 import json
+import os
 import re
 import time
 from .common import (
@@ -186,6 +187,80 @@ def _get_whisper_model(model_name: str = "base"):
     return _WHISPER_MODEL_CACHE[model_name]
 
 
+_FASTER_WHISPER_CACHE: Dict[str, Any] = {}
+
+
+def _transcribe_with_faster_whisper(
+    audio_path: Path, model_name: str, language: Optional[str]
+) -> Dict[str, Any]:
+    """CTranslate2 Whisper (int8, CPU): several times faster than openai-whisper.
+
+    Returns the same dict shape as ``whisper.transcribe`` so callers are unchanged.
+    """
+    import subprocess
+    import tempfile
+
+    import numpy as np
+    from faster_whisper import WhisperModel
+
+    if model_name not in _FASTER_WHISPER_CACHE:
+        logger.info("Loading faster-whisper model: %s", model_name)
+        _FASTER_WHISPER_CACHE[model_name] = WhisperModel(
+            model_name, device="cpu", compute_type="int8"
+        )
+    model = _FASTER_WHISPER_CACHE[model_name]
+
+    # Decode the whole file once with ffmpeg straight to 16 kHz mono float32 on
+    # disk, then feed it in fixed chunks through a memory map. Decoding a long
+    # video in one go keeps several full-length copies in RAM, which on small
+    # machines pushes everything into swap and stalls the transcription.
+    chunk_seconds = max(60, int(os.getenv("WHISPER_CHUNK_SECONDS", "600")))
+    sample_rate = 16000
+    with tempfile.TemporaryDirectory(prefix="whisper-") as work:
+        raw_path = Path(work) / "audio.f32"
+        subprocess.run(
+            ["ffmpeg", "-nostdin", "-v", "error", "-y", "-i", str(audio_path),
+             "-ac", "1", "-ar", str(sample_rate), "-f", "f32le", str(raw_path)],
+            check=True,
+        )
+        audio = np.memmap(raw_path, dtype=np.float32, mode="r")
+        total = len(audio)
+        chunk = chunk_seconds * sample_rate
+        chunks = max(1, -(-total // chunk))
+        logger.info(
+            "Starting faster-whisper transcription with model: %s (language: %s, %.1f min, %d chunk(s))",
+            model_name, language or "auto", total / sample_rate / 60, chunks,
+        )
+        segments: list[Dict[str, Any]] = []
+        detected = language
+        for index in range(chunks):
+            offset = index * chunk_seconds
+            samples = np.array(audio[index * chunk : min(total, (index + 1) * chunk)])
+            segments_iter, info = model.transcribe(
+                samples, word_timestamps=True, language=detected,
+                beam_size=1, vad_filter=True,
+            )
+            # Keep the first chunk's language so later chunks don't drift.
+            detected = detected or info.language
+            for seg in segments_iter:
+                segments.append({
+                    "start": seg.start + offset, "end": seg.end + offset, "text": seg.text,
+                    "words": [
+                        {"word": w.word, "start": w.start + offset, "end": w.end + offset, "probability": w.probability}
+                        for w in (seg.words or [])
+                    ],
+                })
+            del samples
+            if chunks > 1:
+                logger.info("faster-whisper chunk %d/%d done", index + 1, chunks)
+        del audio
+    return {
+        "text": "".join(seg["text"] for seg in segments).strip(),
+        "language": detected,
+        "segments": segments,
+    }
+
+
 def transcribe_with_whisper(
     video_path: Path, model_name: str = "base", language: Optional[str] = None
 ) -> Dict[str, Any]:
@@ -195,8 +270,10 @@ def transcribe_with_whisper(
     ``en_us`` are reduced to the ISO 639-1 base Whisper expects.
     """
     audio_path = _prepare_audio_for_transcription(video_path)
-    model = _get_whisper_model(model_name)
     whisper_language = language.split("_", 1)[0] if language else None
+    if os.getenv("WHISPER_BACKEND", "").strip().lower() in {"faster", "faster-whisper"}:
+        return _transcribe_with_faster_whisper(audio_path, model_name, whisper_language)
+    model = _get_whisper_model(model_name)
     logger.info(
         "Starting Whisper transcription with model: %s (language: %s)",
         model_name,
@@ -332,7 +409,7 @@ def get_video_transcript(
     provider = runtime_config.transcription_provider
 
     if provider == "whisper":
-        return _get_transcript_with_whisper(video_path, runtime_config)
+        return _get_transcript_with_whisper(video_path, runtime_config, source_url)
     if provider == "youtube_captions":
         if not source_url:
             raise ValueError(
@@ -414,13 +491,112 @@ def _get_transcript_with_assemblyai(
         client.http_client.close()
 
 
-def _get_transcript_with_whisper(video_path: Path, runtime_config) -> str:
-    """Get transcript using local Whisper with word-level timestamps."""
+def _youtube_timed_captions(source_url: str, language: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """YouTube's own captions with word timings, in the Whisper result shape.
+
+    Uses uploaded subtitles in the spoken language when present, else YouTube's
+    automatic captions (json3, which carries a start time for every word).
+    Returns None when the video has no usable captions.
+    """
+    import yt_dlp
+
+    try:
+        with yt_dlp.YoutubeDL({"quiet": True, "no_warnings": True, "skip_download": True, "noplaylist": True}) as ydl:
+            info = ydl.extract_info(source_url, download=False)
+    except Exception as exc:
+        logger.warning("YouTube caption lookup failed: %s", exc)
+        return None
+
+    spoken = (language or info.get("language") or "").split("-")[0].split("_")[0].lower()
+    manual = info.get("subtitles") or {}
+    automatic = info.get("automatic_captions") or {}
+    candidates = []
+    if spoken:
+        candidates += [(manual, spoken), (automatic, f"{spoken}-orig"), (automatic, spoken)]
+    candidates += [(automatic, key) for key in automatic if key.endswith("-orig")]
+    track = None
+    for table, key in candidates:
+        formats = table.get(key) or []
+        track = next((f for f in formats if f.get("ext") == "json3"), None)
+        if track:
+            spoken = key.removesuffix("-orig")
+            break
+    if not track:
+        logger.info("No timed YouTube captions found (language=%s)", spoken or "unknown")
+        return None
+
+    try:
+        response = httpx.get(track["url"], timeout=30)
+        response.raise_for_status()
+        events = response.json().get("events") or []
+    except Exception as exc:
+        logger.warning("YouTube caption download failed: %s", exc)
+        return None
+
+    segments: List[Dict[str, Any]] = []
+    for event in events:
+        pieces = [s for s in event.get("segs") or [] if (s.get("utf8") or "").strip()]
+        if not pieces:
+            continue
+        start = event.get("tStartMs", 0) / 1000
+        end = start + event.get("dDurationMs", 0) / 1000
+        starts = [start + s.get("tOffsetMs", 0) / 1000 for s in pieces]
+        words = [
+            {
+                "word": " " + s["utf8"].strip(),
+                "start": starts[i],
+                "end": max(starts[i] + 0.05, starts[i + 1] if i + 1 < len(starts) else end),
+                "probability": 1.0,
+            }
+            for i, s in enumerate(pieces)
+        ]
+        text = " ".join(s["utf8"].strip() for s in pieces)
+        segments.append({"start": start, "end": max(end, words[-1]["end"]), "text": " " + text, "words": words})
+    if not segments:
+        return None
+    # Auto-caption events overlap their neighbours; clip each to the next start.
+    for current, following in zip(segments, segments[1:]):
+        if following["start"] > current["start"]:
+            current["end"] = min(current["end"], following["start"])
+    # Uploaded subtitles time whole lines. Spread each line's time across its
+    # words (by length) so word-synced captions and trims still have word times.
+    for segment in segments:
+        spread: List[Dict[str, Any]] = []
+        for i, word in enumerate(segment["words"]):
+            tokens = word["word"].split()
+            w_end = segment["words"][i + 1]["start"] if i + 1 < len(segment["words"]) else segment["end"]
+            w_end = max(w_end, word["start"] + 0.05)
+            if len(tokens) <= 1:
+                spread.append({**word, "end": w_end})
+                continue
+            weights = [len(t) + 1 for t in tokens]
+            span, cursor = w_end - word["start"], word["start"]
+            for token, weight in zip(tokens, weights):
+                step = span * weight / sum(weights)
+                spread.append({"word": " " + token, "start": cursor, "end": cursor + step, "probability": 1.0})
+                cursor += step
+        segment["words"] = spread
+    logger.info("Using YouTube captions (%s): %d segments", spoken, len(segments))
+    return {"text": "".join(s["text"] for s in segments).strip(), "language": spoken, "segments": segments}
+
+
+def _get_transcript_with_whisper(
+    video_path: Path, runtime_config, source_url: Optional[str] = None
+) -> str:
+    """Get transcript using local Whisper with word-level timestamps.
+
+    For YouTube links, YouTube's own timed captions are tried first: they are
+    instant, while a long video can take a long time to transcribe on a CPU.
+    """
     model_name = runtime_config.whisper_model
-    logger.info("Starting Whisper transcription with model: %s", model_name)
-    whisper_result = transcribe_with_whisper(
-        video_path, model_name, runtime_config.transcription_language or None
-    )
+    whisper_result = None
+    if source_url and os.getenv("YOUTUBE_CAPTIONS_FIRST", "true").strip().lower() in {"1", "true", "yes"}:
+        whisper_result = _youtube_timed_captions(source_url, runtime_config.transcription_language or None)
+    if whisper_result is None:
+        logger.info("Starting Whisper transcription with model: %s", model_name)
+        whisper_result = transcribe_with_whisper(
+            video_path, model_name, runtime_config.transcription_language or None
+        )
 
     formatted_lines = format_transcript_for_analysis(whisper_result)
     cache_transcript_data(video_path, whisper_result)

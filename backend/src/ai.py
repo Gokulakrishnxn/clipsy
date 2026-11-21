@@ -441,7 +441,7 @@ def build_transcript_system_prompt(clip_length: str = "auto") -> str:
 _transcript_agent: Optional[Agent[None, TranscriptAnalysis]] = None
 _transcript_agent_signature: Optional[tuple[str | None, ...]] = None
 
-SUPPORTED_LLM_PROVIDERS = {"google", "google-gla", "openai", "openrouter", "anthropic", "ollama"}
+SUPPORTED_LLM_PROVIDERS = {"google", "google-gla", "openai", "openrouter", "anthropic", "ollama", "claude"}
 
 
 def _split_llm_name(model_name: str) -> tuple[str, str | None]:
@@ -459,7 +459,7 @@ def _get_missing_llm_key_error(model_name: str, runtime_config: Config) -> Optio
     if provider not in SUPPORTED_LLM_PROVIDERS:
         return (
             f"Unsupported LLM provider '{provider}'. "
-            "Use google-gla:*, openai:*, openrouter:*, anthropic:*, or ollama:*."
+            "Use google-gla:*, openai:*, openrouter:*, anthropic:*, ollama:*, or claude:* (the local Claude app)."
         )
 
     if not provider_model_name:
@@ -491,6 +491,13 @@ def _get_missing_llm_key_error(model_name: str, runtime_config: Config) -> Optio
             "Selected LLM provider is Anthropic, but ANTHROPIC_API_KEY is not set. "
             "Set ANTHROPIC_API_KEY or choose another provider with a matching API key."
         )
+
+    if provider == "claude":
+        from .claude_cli_model import claude_cli_path
+
+        if not claude_cli_path():
+            return "Selected LLM is claude:*, but the `claude` CLI was not found. Install Claude Code and sign in, or set CLAUDE_CLI_BIN."
+        return None
 
     if provider == "ollama":
         # Ollama can run locally without an API key. OLLAMA_BASE_URL/OLLAMA_API_KEY
@@ -550,6 +557,10 @@ def _build_transcript_model(
                 "max_tokens": 8192,
             },
         )
+    if provider == "claude":
+        from .claude_cli_model import build_claude_cli_model
+
+        return build_claude_cli_model(provider_model_name or "sonnet")
     if provider != "ollama":
         return model_name
 

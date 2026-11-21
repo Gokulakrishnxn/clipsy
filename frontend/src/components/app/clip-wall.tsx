@@ -9,6 +9,7 @@ import {
 } from "lucide-react";
 import { ClipCover, ScoreRing } from "@/components/app/clip-cover";
 import DynamicVideoPlayer from "@/components/dynamic-video-player";
+import { YoutubeMetadata } from "@/components/app/youtube-metadata";
 import { TranscriptPreview } from "@/components/transcript-preview";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
@@ -177,13 +178,15 @@ const BREAKDOWN = [
   { key: "shareability_score", labelKey: "shareability", icon: Share2 },
 ] as const;
 
-export function ClipFocus({ clip, taskId, index, total, busy, editable, onNavigate, onClose, onDownload, onDelete, hookTypeLabel, actions, children }: {
+export function ClipFocus({ clip, taskId, index, total, busy, editable, showYoutubeDetails = false, onNavigate, onClose, onDownload, onDelete, hookTypeLabel, actions, children }: {
   clip: WallClip | null;
   taskId: string;
   index: number;
   total: number;
   busy: boolean;
   editable: boolean;
+  /** Show the AI-written YouTube title, description and hashtags (owner only). */
+  showYoutubeDetails?: boolean;
   onNavigate: (delta: number) => void;
   onClose: () => void;
   onDownload: () => void;
@@ -284,6 +287,7 @@ export function ClipFocus({ clip, taskId, index, total, busy, editable, onNaviga
                   </section>
                 )}
 
+                {showYoutubeDetails && clip.text && <YoutubeMetadata taskId={taskId} clipId={clip.id} />}
                 {clip.text && <TranscriptPreview text={clip.text} clipTitle={clipTitle(clip, t)} />}
                 {children}
               </div>

@@ -157,7 +157,10 @@ _WHISPER_MODEL_CACHE: Dict[str, Any] = {}
 
 FINAL_VIDEO_CRF = 19
 
-FINAL_VIDEO_PRESET = "medium"
+import os as _os
+
+# Faster presets render sooner at a slightly larger file size (FINAL_VIDEO_PRESET=veryfast).
+FINAL_VIDEO_PRESET = _os.getenv("FINAL_VIDEO_PRESET", "medium")
 
 INTERMEDIATE_CRF = 16
 

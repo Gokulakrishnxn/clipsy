@@ -1338,6 +1338,7 @@ export default function TaskPage() {
         total={sortedClips.length}
         busy={focusedClip ? pendingAction === focusedClip.id || focusedRendering : false}
         editable={task?.status === "completed" && !readOnly && !focusedRendering}
+        showYoutubeDetails={!readOnly && !focusedRendering}
         onNavigate={(delta) => setFocusIndex((i) => (i === null ? i : (i + delta + sortedClips.length) % sortedClips.length))}
         onClose={() => setFocusIndex(null)}
         onDownload={() => focusedClip && handleDownloadClip(focusedClip)}

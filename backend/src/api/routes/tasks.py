@@ -1393,6 +1393,39 @@ async def delete_clip(
         raise HTTPException(status_code=500, detail=f"Error deleting clip: {str(e)}")
 
 
+_YOUTUBE_METADATA_CACHE: Dict[str, dict] = {}
+
+
+@router.post("/{task_id}/clips/{clip_id}/youtube-metadata")
+async def get_clip_youtube_metadata(
+    task_id: str,
+    clip_id: str,
+    request: Request,
+    refresh: bool = False,
+    db: AsyncSession = Depends(get_db),
+):
+    """Generate (and cache) a YouTube title, description and hashtags for a clip."""
+    from ...config import get_config
+    from ...services.youtube_metadata_service import generate_youtube_metadata
+
+    task_service = TaskService(db)
+    await _require_task_owner(request, task_service, db, task_id)
+
+    clip = await task_service.clip_repo.get_clip_by_id(db, clip_id)
+    if not clip or clip["task_id"] != task_id:
+        raise HTTPException(status_code=404, detail="Clip not found")
+
+    if not refresh and clip_id in _YOUTUBE_METADATA_CACHE:
+        return _YOUTUBE_METADATA_CACHE[clip_id]
+    try:
+        metadata = await generate_youtube_metadata(get_config(), dict(clip))
+    except Exception as e:
+        logger.error(f"YouTube metadata generation failed: {e}")
+        raise HTTPException(status_code=502, detail="Could not generate YouTube details")
+    _YOUTUBE_METADATA_CACHE[clip_id] = metadata
+    return metadata
+
+
 @router.get("/{task_id}/clips/{clip_id}/file")
 async def get_clip_file(
     task_id: str,

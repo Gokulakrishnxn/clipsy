@@ -7,11 +7,29 @@ export function middleware(request: NextRequest) {
   const isLandingOnlyModeEnabled =
     process.env.NEXT_PUBLIC_LANDING_ONLY_MODE === "true";
 
+  const { pathname } = request.nextUrl;
+
   if (!isLandingOnlyModeEnabled) {
+    // Single-user mode: no sign-in or sign-up. Pages without a session cookie
+    // go through /api/local-session, which signs in the built-in local user.
+    if (pathname === "/sign-in" || pathname === "/sign-up") {
+      return NextResponse.redirect(new URL("/", request.url));
+    }
+    const isPage =
+      !pathname.startsWith("/api") &&
+      !pathname.startsWith("/_next") &&
+      !pathname.startsWith("/ingest/") &&
+      !PUBLIC_FILE.test(pathname);
+    const hasSession =
+      request.cookies.has("better-auth.session_token") ||
+      request.cookies.has("__Secure-better-auth.session_token");
+    if (isPage && !hasSession && request.method === "GET") {
+      const url = new URL("/api/local-session", request.url);
+      url.searchParams.set("next", pathname + request.nextUrl.search);
+      return NextResponse.redirect(url);
+    }
     return NextResponse.next();
   }
-
-  const { pathname } = request.nextUrl;
 
   if (
     pathname === "/" ||

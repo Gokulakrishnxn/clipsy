@@ -9,6 +9,7 @@ server IP instead of the proxy.
 from __future__ import annotations
 
 import logging
+import os
 import math
 import re
 import secrets
@@ -232,6 +233,12 @@ def proxy_configured(config=None) -> bool:
     return bool((getattr(runtime, "youtube_proxy_url", "") or "").strip())
 
 
+def audio_first_enabled(config=None) -> bool:
+    """Audio-first + section downloads: a proxy is set, or hook-only mode is on."""
+    runtime = trial_config(config or get_config())
+    return proxy_configured(config) or bool(getattr(runtime, "youtube_hook_only", False))
+
+
 def capped_height(value: int | None = None, config=None) -> int:
     """Never request above 1080p. Lower env values are honored."""
     runtime = trial_config(config or get_config())
@@ -284,6 +291,8 @@ def render_proxy_url(template: str, session_id: str, country: str = "") -> str:
     """
     raw = (template or "").strip()
     if not raw:
+        if getattr(get_config(), "youtube_hook_only", False):
+            return ""  # direct connection (yt-dlp treats an empty proxy as "none")
         raise YouTubeDownloadError("YOUTUBE_PROXY_URL is empty")
     if not session_id or not re.fullmatch(r"[A-Za-z0-9]{8,24}", session_id):
         raise YouTubeDownloadError("Proxy session id is not URL-safe")
@@ -393,7 +402,7 @@ def base_proxy_params(task_id: Optional[str] = None, video_id: Optional[str] = N
         "socket_timeout": 30,
         "retries": 1,
         "fragment_retries": 1,
-        "concurrent_fragment_downloads": 4,
+        "concurrent_fragment_downloads": int(os.environ.get("YOUTUBE_FRAGMENT_CONCURRENCY", "4")),
         "noplaylist": True,
         "quiet": True,
         "no_warnings": False,
